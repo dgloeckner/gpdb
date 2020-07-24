@@ -1,21 +1,26 @@
 export DATA_DIR="/data"
+GREENPLUM_INSTALL_DIR=`find /opt/ -maxdepth 1 -type d -name "greenplum*"` 
 
-if [ ! -f "/opt/gpdb/greenplum_path.sh" ]; then
+if [ ! -f "$GREENPLUM_INSTALL_DIR/greenplum_path.sh" ]; then
 	echo '========================> Install GPDB'
-	apt update
+	apt-get update
 	apt install -y \
 		software-properties-common \
-		python-software-properties \
 		less \
 		ssh \
 		sudo \
 		time \
-		libzstd1-dev
+		libzstd1-dev \
+    locales \
+		python \
+    iputils-ping
 	add-apt-repository -y ppa:greenplum/db
-	apt update
+	apt-get update
 
-	apt install -y greenplum-db-oss
-	source /opt/gpdb/greenplum_path.sh
+	apt install -y greenplum-db
+	export GREENPLUM_INSTALL_DIR=`find /opt/ -maxdepth 1 -type d -name "greenplum*"`
+	echo "Greenplum was installed here: $GREENPLUM_INSTALL_DIR"
+	source "$GREENPLUM_INSTALL_DIR/greenplum_path.sh"
 	locale-gen en_US.utf8
 fi
 
@@ -46,22 +51,27 @@ fi
 
 if [ ! -d "/home/gpadmin" ]; then
 	echo '========================> Add gpadmin'
-	useradd -md /home/gpadmin/ gpadmin
+	useradd -s /bin/bash -md /home/gpadmin/ gpadmin
 	chown gpadmin -R $DATA_DIR/gpdata
 	echo  "export DATA_DIR=$DATA_DIR" >> /home/gpadmin/.profile
 	echo  "export MASTER_DATA_DIRECTORY=$DATA_DIR/gpdata/gpmaster/gpsne-1" >> /home/gpadmin/.profile
-	echo  "export GPHOME=/opt/gpdb" >> /home/gpadmin/.profile
+	echo  "export GPHOME=$GREENPLUM_INSTALL_DIR" >> /home/gpadmin/.profile
 	echo  "source $GPHOME/greenplum_path.sh" >> /home/gpadmin/.profile
 
 	echo  "export DATA_DIR=$DATA_DIR" >> /home/gpadmin/.bashrc
 	echo  "export MASTER_DATA_DIRECTORY=$DATA_DIR/gpdata/gpmaster/gpsne-1" >> /home/gpadmin/.bashrc
-	echo  "export GPHOME=/opt/gpdb" >> /home/gpadmin/.bashrc
+	echo  "export GPHOME=$GREENPLUM_INSTALL_DIR" >> /home/gpadmin/.bashrc
 	echo  "source $GPHOME/greenplum_path.sh" >> /home/gpadmin/.bashrc
 
 	chown gpadmin:gpadmin /home/gpadmin/.profile
-	su - gpadmin bash -c 'mkdir /home/gpadmin/.ssh'
+	sudo -u gpadmin mkdir /home/gpadmin/.ssh
 	ssh-keygen -f /home/gpadmin/.ssh/id_rsa -t rsa -N ""
 	chown -R gpadmin:gpadmin /home/gpadmin/.ssh/*
+	echo "Increasing ulimits for gpadmin"
+	echo "gpadmin 	 soft     nofile         200000" >> /etc/security/limits.conf
+	echo "gpadmin    hard     nofile         200000" >> /etc/security/limits.conf
+  echo "gpadmin    soft     nproc         200000" >> /etc/security/limits.conf
+  echo "gpadmin    hard     nproc         200000" >> /etc/security/limits.conf
 fi
 
 echo '========================> GPDB is starting...'
@@ -70,6 +80,14 @@ sleep 2
 chown gpadmin:gpadmin /gpdb_start.sh
 chmod +x /gpdb_start.sh
 su - gpadmin bash -c '/gpdb_start.sh'
+echo "Increasing memory limit for segments and master"
+su - gpadmin bash -c 'gpconfig -c gp_vmem_protect_limit -v 64000'
 
+echo "Increasing CPUs per segment"
+su - gpadmin bash -c 'gpconfig -c gp_resqueue_priority_cpucores_per_segment -v 10'
 
+echo "Increasing cache limit per worker (make it 10000 MB; to be tested)"
+gpconfig -c gp_vmem_protect_segworker_cache_limit -v 10000
 
+echo "Restarting cluster"
+su - gpadmin bash -c 'gpstop -a; gpstart -a'
